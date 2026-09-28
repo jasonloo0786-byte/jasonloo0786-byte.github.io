@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Neon Space Dodge</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:#020210;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    overscroll-behavior: none;
+  }
+  canvas { display:block; width:100%; height:100%; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W, H, dpr;
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (typeof player !== 'undefined') {
+    player.y = H - 130;
+    player.x = Math.max(player.r, Math.min(W - player.r, player.x));
+    player.targetX = player.x;
+  }
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+
+let state = 'start';
+let score = 0;
+let best = parseInt(localStorage.getItem('neonSpaceBest') || '0');
+let player = { x: 0, y: 0, r: 22, targetX: 0 };
+let meteors = [];
+let orbs = [];
+let stars = [];
+let particles = [];
+let shockwaves = [];
+let lastTime = 0;
+let spawnMeteorTimer = 0;
+let spawnOrbTimer = 0;
+let gameTime = 0;
+let explosionTimer = 0;
+let baseSpeed = 220;
+let speed = baseSpeed;
+let audioCtx = null;
+
+let shields = 3;
+const MAX_SHIELDS = 3;
+let invincibleTimer = 0;
+let screenShake = 0;
+
+resize();
+player.x = W / 2;
+player.y = H - 130;
+player.targetX = W / 2;
+
+for (let i = 0; i < 90; i++) {
+  stars.push({
+    x: Math.random() * W,
+    y: Math.random() * H,
+    r: Math.random() * 1.5 + 0.4,
+    speed: Math.random() * 30 + 15,
+    alpha: Math.random() * 0.6 + 0.3
+  });
+}
+
+function initAudio() {
+  if (!audioCtx) {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch(e) {}
+  }
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+}
+function playSound(freq, duration, type='sine', volume=0.1, delay=0) {
+  if (!audioCtx) return;
+  const startTime = audioCtx.currentTime + delay;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(volume, startTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(startTime);
+  osc.stop(startTime + duration);
+}
+
+function handleMove(clientX) {
+  if (state === 'playing') {
+    player.targetX = clientX;
+  }
+}
+
+function startGame() {
+  state = 'playing';
+  score = 0;
+  meteors = [];
+  orbs = [];
+  particles = [];
+  shockwaves = [];
+  player.x = W / 2;
+  player.y = H - 130;
+  player.targetX = W / 2;
+  gameTime = 0;
+  speed = baseSpeed;
+  spawnMeteorTimer = 0;
+  spawnOrbTimer = 0;
+  explosionTimer = 0;
+  shields = MAX_SHIELDS;
+  invincibleTimer = 0;
+  screenShake = 0;
+}
+
+function createExplosion(x, y) {
+  const colors = ['#00ffff', '#aaffff', '#ffffff', '#ff00ff', '#00ffaa', '#ffff00', '#ff6633'];
+  for (let i = 0; i < 55; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = 60 + Math.random() * 380;
+    const maxLife = 0.55 + Math.random() * 0.75;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * spd,
+      vy: Math.sin(angle) * spd,
+      life: maxLife,
+      maxLife: maxLife,
+      size: 1.5 + Math.random() * 4.5,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      gravity: 80 + Math.random() * 120
+    });
+  }
+  shockwaves.push({ x, y, life: 0.55, maxLife: 0.55, maxR: 160 });
+  shockwaves.push({ x, y, life: 0.4, maxLife: 0.4, maxR: 100 });
+}
+
+function createShieldBreak(x, y) {
+  const colors = ['#00ffff', '#00ffaa', '#aaffff', '#ffffff'];
+  for (let i = 0; i < 22; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = 80 + Math.random() * 200;
+    const maxLife = 0.35 + Math.random() * 0.4;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * spd,
+      vy: Math.sin(angle) * spd,
+      life: maxLife,
+      maxLife: maxLife,
+      size: 1.5 + Math.random() * 2.5,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      gravity: 20
+    });
+  }
+  shockwaves.push({ x, y, life: 0.3, maxLife: 0.3, maxR: 85 });
+}
+
+function startExplosion() {
+  state = 'exploding';
+  explosionTimer = 0;
+  screenShake = 1.0;
+  if (score > best) {
+    best = score;
+    localStorage.setItem('neonSpaceBest', best);
+  }
+  createExplosion(player.x, player.y);
+  playSound(60, 0.8, 'sawtooth', 0.22, 0);
+  playSound(140, 0.55, 'square', 0.15, 0);
+  playSound(320, 0.35, 'triangle', 0.10, 0.02);
+  playSound(80, 0.4, 'sawtooth', 0.08, 0.12);
+}
+
+function getShipLevel() {
+  return Math.min(Math.floor(score / 50), 5);
+}
+
+function circleCollide(x1, y1, r1, x2, y2, r2) {
+  const dx = x1 - x2;
+  const dy = y1 - y2;
+  return dx * dx + dy * dy < (r1 + r2) * (r1 + r2);
+}
+
+function update(dt) {
+  for (const s of stars) {
+    s.y += s.speed * dt;
+    if (s.y > H + 5) { s.y = -5; s.x = Math.random() * W; }
+  }
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= 0.96;
+    p.vy *= 0.96;
+    p.vy += p.gravity * dt;
+    p.life -= dt;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+  for (let i = shockwaves.length - 1; i >= 0; i--) {
+    shockwaves[i].life -= dt;
+    if (shockwaves[i].life <= 0) shockwaves.splice(i, 1);
+  }
+  if (screenShake > 0) screenShake = Math.max(0, screenShake - dt * 3);
+  if (invincibleTimer > 0) invincibleTimer = Math.max(0, invincibleTimer - dt);
+
+  if (state === 'exploding') {
+    explosionTimer += dt;
+    if (explosionTimer > 1.05) {
+      state = 'gameover';
+    }
+    return;
+  }
+
+  if (state !== 'playing') return;
+
+  gameTime += dt;
+  speed = baseSpeed + Math.min(gameTime * 8, 200);
+
+  player.x += (player.targetX - player.x) * 0.6;
+  player.x = Math.max(player.r, Math.min(W - player.r, player.x));
+
+  spawnMeteorTimer += dt;
+  const meteorInterval = Math.max(0.35, 1.15 - gameTime * 0.02);
+  if (spawnMeteorTimer > meteorInterval) {
+    spawnMeteorTimer = 0;
+    const r = 12 + Math.random() * 26;
+    const x = r + Math.random() * (W - 2 * r);
+    meteors.push({
+      x, y: -r, r,
+      speed: speed * (0.6 + Math.random() * 0.35),
+      rot: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 2.6,
+      verts: 7 + Math.floor(Math.random() * 4)
+    });
+  }
+
+  spawnOrbTimer += dt;
+  const orbInterval = 0.85 + Math.random() * 0.4;
+  if (spawnOrbTimer > orbInterval) {
+    spawnOrbTimer = 0;
+    const r = 11 + Math.random() * 5;
+    const x = r + 8 + Math.random() * (W - 2 * r - 16);
+    orbs.push({
+      x, y: -r, r,
+      speed: speed * (0.5 + Math.random() * 0.2),
+      rot: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 4,
+      pulse: Math.random() * Math.PI * 2
+    });
+  }
+
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i];
+    m.y += m.speed * dt;
+    m.rot += m.rotSpeed * dt;
+    if (m.y > H + 60) { meteors.splice(i, 1); continue; }
+
+    if (circleCollide(player.x, player.y, player.r, m.x, m.y, m.r)) {
+      if (invincibleTimer > 0) continue;
+
+      if (shields > 0) {
+        shields--;
+        invincibleTimer = 1.1;
+        screenShake = 0.7;
+        meteors.splice(i, 1);
+        createShieldBreak(m.x, m.y);
+        playSound(1200, 0.09, 'triangle', 0.16);
+        playSound(420, 0.16, 'sawtooth', 0.12, 0.03);
+      } else {
+        startExplosion();
+        return;
+      }
+    }
+  }
+
+  for (let i = orbs.length - 1; i >= 0; i--) {
+    const o = orbs[i];
+    o.y += o.speed * dt;
+    o.rot += o.rotSpeed * dt;
+    o.pulse += dt * 6;
+    if (o.y > H + 40) { orbs.splice(i, 1); continue; }
+    if (circleCollide(player.x, player.y, player.r + 4, o.x, o.y, o.r)) {
+      orbs.splice(i, 1);
+      score += 1;
+      playSound(1100 + Math.min(score, 30) * 15, 0.09, 'sine', 0.12);
+    }
+  }
+}
+
+function drawShieldRings(x, y) {
+  if (shields <= 0) return;
+  const r = player.r;
+  const radii = [r + 10, r + 19, r + 28];
+  const colors = ['#00ffff', '#00ffaa', '#aa66ff'];
+  const t = Date.now() / 200;
+  for (let i = 0; i < shields; i++) {
+    ctx.save();
+    ctx.strokeStyle = colors[i];
+    ctx.shadowColor = colors[i];
+    ctx.shadowBlur = 14;
+    ctx.globalAlpha = 0.55 + Math.sin(t + i * 2) * 0.25;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, radii[i], 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawShip(x, y, level) {
+  const r = player.r;
+  const t = Date.now() / 1000;
+  ctx.save();
+  ctx.translate(x, y);
+
+  if (invincibleTimer > 0) {
+    const flash = Math.floor(Date.now() / 80) % 2 === 0;
+    ctx.globalAlpha = flash ? 0.3 : 0.95;
+  }
+
+  // ============ 引擎火焰（所有等级都有，越高级越强）============
+  const flameLen = 20 + level * 10;
+  const flameAlpha = 0.55 + level * 0.07;
+  const fw = 0.5 + level * 0.08;
+  const flameGrad = ctx.createLinearGradient(0, r * 0.5, 0, r + flameLen);
+  flameGrad.addColorStop(0, `rgba(0, 220, 255, ${flameAlpha})`);
+  flameGrad.addColorStop(0.35, `rgba(120, 80, 255, ${flameAlpha * 0.85})`);
+  flameGrad.addColorStop(0.7, `rgba(255, 0, 200, ${flameAlpha * 0.5})`);
+  flameGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = flameGrad;
+  ctx.beginPath();
+  ctx.moveTo(-r * fw, r * 0.45);
+  ctx.lineTo(r * fw, r * 0.45);
+  ctx.lineTo(0, r + flameLen);
+  ctx.closePath();
+  ctx.fill();
+
+  // 侧翼小喷口（Lv3+）
+  if (level >= 3) {
+    for (const side of [-1, 1]) {
+      const sg = ctx.createLinearGradient(side * r * 0.6, r * 0.3, side * r * 0.6, r + flameLen * 0.55);
+      sg.addColorStop(0, `rgba(0, 255, 255, ${0.5 + level * 0.06})`);
+      sg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = sg;
+      ctx.beginPath();
+      ctx.moveTo(side * r * 0.45, r * 0.3);
+      ctx.lineTo(side * r * 0.75, r * 0.3);
+      ctx.lineTo(side * r * 0.6, r + flameLen * 0.55);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // ============ 各等级船体 ============
+  ctx.save();
+
+  if (level === 0) {
+    // ===== Lv1：基础银色战机 =====
+    ctx.shadowColor = '#66ddff';
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = '#b8e8ff';
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 1.0);
+    ctx.lineTo(r * 0.7, r * 0.4);
+    ctx.lineTo(0, r * 0.2);
+    ctx.lineTo(-r * 0.7, r * 0.4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.15, r * 0.22, 0, Math.PI * 2);
+    ctx.fill();
+
+  } else if (level === 1) {
+    // ===== Lv2：青色双翼战机 =====
+    ctx.shadowColor = '#00ffff';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = '#00ffff';
+    // 主机身
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 1.25);
+    ctx.lineTo(r * 0.5, r * 0.1);
+    ctx.lineTo(r * 0.35, r * 0.5);
+    ctx.lineTo(0, r * 0.3);
+    ctx.lineTo(-r * 0.35, r * 0.5);
+    ctx.lineTo(-r * 0.5, r * 0.1);
+    ctx.closePath();
+    ctx.fill();
+    // 双翼
+    ctx.fillStyle = '#00dddd';
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(side * r * 0.45, r * 0.0);
+      ctx.lineTo(side * r * 1.15, r * 0.5);
+      ctx.lineTo(side * r * 0.85, r * 0.65);
+      ctx.lineTo(side * r * 0.4, r * 0.35);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // 座舱
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.25, r * 0.25, 0, Math.PI * 2);
+    ctx.fill();
+
+  } else if (level === 2) {
+    // ===== Lv3：蓝白三翼护卫舰 =====
+    ctx.shadowColor = '#00aaff';
+    ctx.shadowBlur = 22;
+    ctx.fillStyle = '#0099ff';
+    // 中央主体
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 1.4);
+    ctx.lineTo(r * 0.45, -r * 0.3);
+    ctx.lineTo(r * 0.55, r * 0.5);
+    ctx.lineTo(0, r * 0.35);
+    ctx.lineTo(-r * 0.55, r * 0.5);
+    ctx.lineTo(-r * 0.45, -r * 0.3);
+    ctx.closePath();
+    ctx.fill();
+    // 主翼
+    ctx.fillStyle = '#00ccff';
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(side * r * 0.5, -r * 0.2);
+      ctx.lineTo(side * r * 1.5, r * 0.3);
+      ctx.lineTo(side * r * 1.3, r * 0.7);
+      ctx.lineTo(side * r * 0.5, r * 0.45);
+      ctx.closePath();
+      ctx.fill();
+      // 副翼
+      ctx.fillStyle = '#66e0ff';
+      ctx.beginPath();
+      ctx.moveTo(side * r * 0.4, r * 0.35);
+      ctx.lineTo(side * r * 0.95, r * 0.85);
+      ctx.lineTo(side * r * 0.55, r * 0.85);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#00ccff';
+    }
+    // 中央金色核心
+    ctx.fillStyle = '#ffdd33';
+    ctx.shadowColor = '#ffdd33';
+    ctx.shadowBlur = 15;
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.3, r * 0.24, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.3, r * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+
+  } else if (level === 3) {
+    // ===== Lv4：紫青重型巡洋舰 =====
+    ctx.shadowColor = '#aa66ff';
+    ctx.shadowBlur = 26;
+    // 尾翼
+    ctx.fillStyle = '#6600cc';
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(side * r * 0.5, r * 0.15);
+      ctx.lineTo(side * r * 1.6, r * 0.75);
+      ctx.lineTo(side * r * 1.35, r * 1.1);
+      ctx.lineTo(side * r * 0.4, r * 0.7);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // 主体
+    ctx.fillStyle = '#aa44ff';
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 1.55);
+    ctx.lineTo(r * 0.55, -r * 0.4);
+    ctx.lineTo(r * 0.75, r * 0.6);
+    ctx.lineTo(0, r * 0.45);
+    ctx.lineTo(-r * 0.75, r * 0.6);
+    ctx.lineTo(-r * 0.55, -r * 0.4);
+    ctx.closePath();
+    ctx.fill();
+    // 前翼
+    ctx.fillStyle = '#cc77ff';
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(side * r * 0.4, -r * 0.6);
+      ctx.lineTo(side * r * 1.25, -r * 0.1);
+      ctx.lineTo(side * r * 1.1, r * 0.2);
+      ctx.lineTo(side * r * 0.4, -r * 0.1);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // 能量核心（外环）
+    ctx.strokeStyle = '#00ffff';
+    ctx.shadowColor = '#00ffff';
+    ctx.shadowBlur = 18;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.3, r * 0.35, 0, Math.PI * 2);
+    ctx.stroke();
+    // 内核心
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur = 20;
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.3, r * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+
+  } else if (level === 4) {
+    // ===== Lv5：粉紫传奇旗舰 =====
+    ctx.shadowColor = '#ff44dd';
+    ctx.shadowBlur = 30;
+    // 后掠翼
+    ctx.fillStyle = '#ff44cc';
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(side * r * 0.4, r * 0.0);
+      ctx.lineTo(side * r * 1.8, r * 1.0);
+      ctx.lineTo(side * r * 1.5, r * 1.4);
+      ctx.lineTo(side * r * 0.3, r * 0.6);
+      ctx.closePath();
+      ctx.fill();
+      // 翼尖光点
+      ctx.fillStyle = '#00ffff';
+      ctx.shadowColor = '#00ffff';
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.arc(side * r * 1.55, r * 1.1, r * 0.13, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ff44cc';
+      ctx.shadowColor = '#ff44dd';
+      ctx.shadowBlur = 30;
+    }
+    // 主体
+    ctx.fillStyle = '#ff66ee';
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 1.7);
+    ctx.lineTo(r * 0.6, -r * 0.5);
+    ctx.lineTo(r * 0.85, r * 0.7);
+    ctx.lineTo(0, r * 0.5);
+    ctx.lineTo(-r * 0.85, r * 0.7);
+    ctx.lineTo(-r * 0.6, -r * 0.5);
+    ctx.closePath();
+    ctx.fill();
+    // 前掠小翼
+    ctx.fillStyle = '#ffaaff';
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(side * r * 0.4, -r * 0.8);
+      ctx.lineTo(side * r * 1.35, -r * 0.2);
+      ctx.lineTo(side * r * 1.15, r * 0.25);
+      ctx.lineTo(side * r * 0.35, -r * 0.15);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // 核心能量球
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = '#00ffff';
+    ctx.shadowBlur = 28;
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.35, r * 0.28, 0, Math.PI * 2);
+    ctx.fill();
+    // 脉冲环
+    const pulse = 0.6 + Math.sin(t * 4) * 0.4;
+    ctx.strokeStyle = `rgba(0, 255, 255, ${pulse})`;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#00ffff';
+    ctx.shadowBlur = 15;
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.35, r * 0.42, 0, Math.PI * 2);
+    ctx.stroke();
+
+  } else {
+    // ===== Lv6：彩虹神级泰坦 =====
+    // 外层彩虹光环
+    const ringColors = ['#ff3366', '#ffaa00', '#ffff00', '#00ff88', '#00ccff', '#aa66ff'];
+    for (let i = 0; i < 6; i++) {
+      const angle = t * 2 + i * Math.PI / 3;
+      const cr = r * 2.0;
+      const cx = Math.cos(angle) * cr;
+      const cy = Math.sin(angle) * cr;
+      ctx.fillStyle = ringColors[i];
+      ctx.shadowColor = ringColors[i];
+      ctx.shadowBlur = 20;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 0.14, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur = 35;
+
+    // 超宽后掠翼
+    for (const side of [-1, 1]) {
+      const wg = ctx.createLinearGradient(side * r * 0.3, 0, side * r * 2.2, r * 1.3);
+      wg.addColorStop(0, '#ffffff');
+      wg.addColorStop(0.5, '#ffdd00');
+      wg.addColorStop(1, '#ff3366');
+      ctx.fillStyle = wg;
+      ctx.beginPath();
+      ctx.moveTo(side * r * 0.4, -r * 0.1);
+      ctx.lineTo(side * r * 2.2, r * 0.9);
+      ctx.lineTo(side * r * 1.9, r * 1.5);
+      ctx.lineTo(side * r * 0.2, r * 0.5);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // 主体（白金色）
+    const bodyG = ctx.createLinearGradient(0, -r * 2, 0, r);
+    bodyG.addColorStop(0, '#ffffff');
+    bodyG.addColorStop(0.4, '#ffee88');
+    bodyG.addColorStop(0.8, '#ffaa00');
+    bodyG.addColorStop(1, '#ff6600');
+    ctx.fillStyle = bodyG;
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 1.9);
+    ctx.lineTo(r * 0.7, -r * 0.6);
+    ctx.lineTo(r * 1.0, r * 0.85);
+    ctx.lineTo(0, r * 0.6);
+    ctx.lineTo(-r * 1.0, r * 0.85);
+    ctx.lineTo(-r * 0.7, -r * 0.6);
+    ctx.closePath();
+    ctx.fill();
+
+    // 前掠金色小翼
+    ctx.fillStyle = '#ffdd44';
+    ctx.shadowColor = '#ffdd44';
+    ctx.shadowBlur = 20;
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(side * r * 0.45, -r * 1.0);
+      ctx.lineTo(side * r * 1.5, -r * 0.15);
+      ctx.lineTo(side * r * 1.25, r * 0.3);
+      ctx.lineTo(side * r * 0.4, -r * 0.3);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // 中央超级核心
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur = 40;
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.5, r * 0.38, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 核心内层彩虹
+    const coreAngle = t * 3;
+    for (let i = 0; i < 6; i++) {
+      const a = coreAngle + i * Math.PI / 3;
+      ctx.fillStyle = ringColors[i];
+      ctx.shadowColor = ringColors[i];
+      ctx.shadowBlur = 12;
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * r * 0.2, -r * 0.5 + Math.sin(a) * r * 0.2, r * 0.07, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 双重脉冲环
+    const pulse1 = 0.5 + Math.sin(t * 5) * 0.5;
+    const pulse2 = 0.5 + Math.sin(t * 5 + Math.PI) * 0.5;
+    ctx.strokeStyle = `rgba(255, 255, 255, ${pulse1})`;
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur = 25;
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.5, r * 0.6, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 200, 0, ${pulse2})`;
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.5, r * 0.8, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 尾迹粒子
+    for (let i = 0; i < 5; i++) {
+      const px = (Math.random() - 0.5) * r * 1.2;
+      const py = r * 0.6 + Math.random() * r * 1.8;
+      ctx.fillStyle = `rgba(255, 220, 100, ${0.7 - i * 0.12})`;
+      ctx.shadowColor = '#ffdd44';
+      ctx.shadowBlur = 12;
+      ctx.beginPath();
+      ctx.arc(px, py, r * (0.08 - i * 0.012), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  ctx.restore();
+  ctx.restore();
+}
+function drawOrb(o) {
+  const pulseScale = 1 + Math.sin(o.pulse) * 0.12;
+  ctx.save();
+  ctx.translate(o.x, o.y);
+
+  ctx.save();
+  ctx.globalAlpha = 0.35 + Math.sin(o.pulse) * 0.15;
+  ctx.fillStyle = '#00ffaa';
+  ctx.shadowColor = '#00ffaa';
+  ctx.shadowBlur = 22;
+  ctx.beginPath();
+  ctx.arc(0, 0, o.r * 1.5 * pulseScale, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.rotate(o.rot);
+  ctx.shadowColor = '#00ffaa';
+  ctx.shadowBlur = 16;
+  ctx.fillStyle = '#00ffcc';
+  ctx.beginPath();
+  ctx.moveTo(0, -o.r);
+  ctx.lineTo(o.r * 0.65, 0);
+  ctx.lineTo(0, o.r);
+  ctx.lineTo(-o.r * 0.65, 0);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.moveTo(0, -o.r * 0.5);
+  ctx.lineTo(o.r * 0.32, 0);
+  ctx.lineTo(0, o.r * 0.5);
+  ctx.lineTo(-o.r * 0.32, 0);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+function draw() {
+  ctx.fillStyle = '#020210';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  if (screenShake > 0) {
+    const s = screenShake * 22;
+    ctx.translate((Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
+  }
+
+  for (const s of stars) {
+    ctx.fillStyle = `rgba(255, 255, 255, ${s.alpha})`;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  for (const m of meteors) {
+    ctx.save();
+    ctx.translate(m.x, m.y);
+    ctx.rotate(m.rot);
+    ctx.shadowColor = '#ff6633';
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = '#8B4513';
+    ctx.strokeStyle = '#ff8844';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < m.verts; i++) {
+      const angle = (i / m.verts) * Math.PI * 2;
+      const rr = m.r * (0.75 + (i % 3) * 0.15);
+      if (i === 0) ctx.moveTo(Math.cos(angle) * rr, Math.sin(angle) * rr);
+      else ctx.lineTo(Math.cos(angle) * rr, Math.sin(angle) * rr);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  for (const o of orbs) {
+    drawOrb(o);
+  }
+
+  if (state === 'playing') {
+    const level = getShipLevel();
+    drawShieldRings(player.x, player.y);
+    drawShip(player.x, player.y, level);
+  }
+
+  for (const sw of shockwaves) {
+    const progress = 1 - sw.life / sw.maxLife;
+    const radius = sw.maxR * progress;
+    const alpha = sw.life / sw.maxLife;
+    ctx.save();
+    ctx.shadowColor = '#00ffff';
+    ctx.shadowBlur = 25;
+    ctx.strokeStyle = `rgba(0, 255, 255, ${alpha * 0.9})`;
+    ctx.lineWidth = 4 * alpha + 1;
+    ctx.beginPath();
+    ctx.arc(sw.x, sw.y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 0, 255, ${alpha * 0.7})`;
+    ctx.lineWidth = 3 * alpha + 1;
+    ctx.beginPath();
+    ctx.arc(sw.x, sw.y, radius * 0.7, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.8})`;
+    ctx.lineWidth = 2 * alpha + 0.5;
+    ctx.beginPath();
+    ctx.arc(sw.x, sw.y, radius * 0.45, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  for (const p of particles) {
+    const alpha = Math.max(0, p.life / p.maxLife);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.restore();
+
+  ctx.save();
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 26px Arial';
+  ctx.textAlign = 'left';
+  ctx.shadowColor = '#00ffff';
+  ctx.shadowBlur = 8;
+  ctx.fillText('Score: ' + score, 18, 46);
+  ctx.textAlign = 'right';
+  ctx.fillText('Best: ' + best, W - 18, 46);
+
+  if (state === 'playing') {
+    const progress = score % 50;
+    const level = getShipLevel();
+    ctx.textAlign = 'center';
+    ctx.font = '14px Arial';
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.shadowBlur = 0;
+    ctx.fillText(`Ship Lv.${level + 1}  ·  ${progress}/50 to next`, W / 2, 78);
+
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 13px Arial';
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fillText('SHIELDS', 20, 96);
+    const shieldColors = ['#00ffff', '#00ffaa', '#aa66ff'];
+    for (let i = 0; i < MAX_SHIELDS; i++) {
+      const sx = 90 + i * 22;
+      const sy = 91;
+      if (i < shields) {
+        ctx.fillStyle = shieldColors[i];
+        ctx.shadowColor = shieldColors[i];
+        ctx.shadowBlur = 10;
+      } else {
+        ctx.fillStyle = 'rgba(80, 80, 100, 0.5)';
+        ctx.shadowBlur = 0;
+      }
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - 5);
+      ctx.lineTo(sx + 5, sy - 2);
+      ctx.lineTo(sx + 5, sy + 2);
+      ctx.lineTo(sx, sy + 6);
+      ctx.lineTo(sx - 5, sy + 2);
+      ctx.lineTo(sx - 5, sy - 2);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+  }
+  ctx.restore();
+
+  if (state === 'start') {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 32px Arial';
+    ctx.shadowColor = '#00ffff';
+    ctx.shadowBlur = 22;
+    ctx.fillText('NEON SPACE DODGE', W / 2, H / 2 - 90);
+    ctx.font = '22px Arial';
+    ctx.shadowBlur = 10;
+    ctx.fillText('TAP TO START', W / 2, H / 2 - 20);
+    ctx.font = '15px Arial';
+    ctx.fillStyle = 'rgba(255,255,255,0.65)';
+    ctx.shadowBlur = 0;
+    ctx.fillText('Slide to move  ·  Dodge meteors', W / 2, H / 2 + 25);
+    ctx.fillStyle = '#00ffaa';
+    ctx.fillText('Collect green crystals = +1 point', W / 2, H / 2 + 50);
+    ctx.fillStyle = '#00ffff';
+    ctx.fillText('3 shields protect you from impacts', W / 2, H / 2 + 75);
+    ctx.fillStyle = 'rgba(255,255,255,0.65)';
+    ctx.fillText('Every 50 points upgrades your ship', W / 2, H / 2 + 100);
+    ctx.restore();
+  }
+
+  if (state === 'gameover') {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 38px Arial';
+    ctx.shadowColor = '#ff00ff';
+    ctx.shadowBlur = 22;
+    ctx.fillText('SHIP DESTROYED', W / 2, H / 2 - 50);
+    ctx.font = '26px Arial';
+    ctx.fillText('Score: ' + score, W / 2, H / 2 + 10);
+    ctx.font = '20px Arial';
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.fillText('Ship reached Lv.' + (getShipLevel() + 1), W / 2, H / 2 + 48);
+    ctx.font = '18px Arial';
+    ctx.fillText('TAP TO RESTART', W / 2, H / 2 + 95);
+    ctx.restore();
+  }
+}
+
+function loop(timestamp) {
+  const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+  lastTime = timestamp;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+let touchActive = false;
+let mouseActive = false;
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  initAudio();
+  touchActive = true;
+  if (state === 'start' || state === 'gameover') {
+    startGame();
+  } else if (state === 'playing') {
+    const t = e.touches[0];
+    if (t) handleMove(t.clientX);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (state === 'playing' && touchActive) {
+    const t = e.touches[0];
+    if (t) handleMove(t.clientX);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  touchActive = false;
+}, { passive: false });
+
+canvas.addEventListener('touchcancel', () => { touchActive = false; }, { passive: true });
+
+canvas.addEventListener('mousedown', e => {
+  initAudio();
+  mouseActive = true;
+  if (state === 'start' || state === 'gameover') {
+    startGame();
+  } else if (state === 'playing') {
+    handleMove(e.clientX);
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (state === 'playing' && mouseActive) {
+    handleMove(e.clientX);
+  }
+});
+
+canvas.addEventListener('mouseup', () => { mouseActive = false; });
+canvas.addEventListener('mouseleave', () => { mouseActive = false; });
+
+document.addEventListener('touchmove', e => {
+  if (e.target === canvas) e.preventDefault();
+}, { passive: false });
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('contextmenu', e => e.preventDefault());
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
